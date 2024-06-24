@@ -2,9 +2,12 @@
 
 import csv
 import argparse
+import contextlib
 import os
 import re
 import sys
+import subprocess
+import tempfile
 
 import git
 
@@ -40,23 +43,81 @@ def locate_functions(old_commit, new_commit):
     return all_matched, list(functions)
 
 
+def create_snapshot(repo, commit, diffkemp, functions, output_dir):
+    repo.git.clean("-fdx")
+    repo.git.restore(".")
+    repo.git.checkout(commit.hexsha)
+
+    kargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    subprocess.check_call(["make", "allmodconfig"], **kargs)
+    subprocess.check_call(["scripts/config", "--disable", "CONFIG_RETPOLINE"], **kargs)
+    subprocess.check_call(
+        ["make", "prepare", "EXTRA_CFLAGS=-w -fno-pie -no-pie", "CFLAGS=-w", "HOSTLDFLAGS=-no-pie"],
+        **kargs
+    )
+    subprocess.check_call(
+        ["make", "modules_prepare", "EXTRA_CFLAGS=-w -fno-pie -no-pie", "CFLAGS=-w", "HOSTLDFLAGS=-no-pie"],
+        **kargs
+    )
+
+    with tempfile.NamedTemporaryFile("w+t", delete_on_close=False) as fp:
+        fp.write("\n".join(functions) + "\n")
+        fp.close()
+        subprocess.check_call(
+            [diffkemp, "build-kernel", repo.working_tree_dir, output_dir, fp.name],
+            **kargs
+        )
+
+
 def analyze_commit(args, writer, commit):
     repo = git.Repo(args.repo)
     new_commit = repo.commit(commit)
     old_commit = repo.commit(f"{commit}^")
+
     snapshot_path = os.path.join(os.getcwd(), "snapshot", commit)
+    os.makedirs(snapshot_path, exist_ok=True)
+
+    result_path = os.path.join(os.getcwd(), "result", commit)
+    os.makedirs(result_path, exist_ok=True)
+
     old_snapshot = os.path.join(snapshot_path, "old")
     new_snapshot = os.path.join(snapshot_path, "new")
 
     all_matched, functions = locate_functions(old_commit, new_commit)
-    if not all_matched:
-        writer.writerow([commit, ", ".join(functions), len(functions), "-", "UNK"])
-        return
+
+    with contextlib.chdir(args.repo):
+        create_snapshot(repo, old_commit, args.diffkemp, functions, old_snapshot)
+        create_snapshot(repo, new_commit, args.diffkemp, functions, new_snapshot)
+
+    compare_command = [
+        args.diffkemp,
+        "compare",
+        old_snapshot,
+        new_snapshot,
+        "--report-stat",
+        "-o",
+        result_path
+    ]
+    output = subprocess.run(compare_command, capture_output=True).stdout.decode()
+    if match := re.search(r"^Equal:\s*(?P<number>\d+)", output, re.M):
+        eq = int(match.group("number"))
+        verdict = "equal" if eq == len(functions) else "not equal"
+        writer.writerow([
+            commit,
+            ", ".join(functions),
+            len(functions),
+            eq,
+            verdict,
+            all_matched
+        ])
+    else:
+        raise RuntimeError("Unable to detect the number of equal functions")
 
 
 def run_analysis(args):
     writer = csv.writer(sys.stdout)
-    writer.writerow(["commit", "functions", "no_functions", "no_eq_functions", "verdict"])
+    writer.writerow(["commit", "functions", "no_functions", "no_eq_functions", "verdict", "confident"])
     for commit in sys.stdin:
         commit = commit.strip()
         analyze_commit(args, writer, commit)
