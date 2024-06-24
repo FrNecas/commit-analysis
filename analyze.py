@@ -125,7 +125,7 @@ def analyze_commit(args, writer, commit):
 
 
 def run_analysis(args):
-    writer = csv.writer(sys.stdout)
+    writer = csv.writer(sys.stdout, dialect="unix")
     writer.writerow(["commit", "functions", "no_functions", "no_eq_functions", "verdict", "confident"])
     for commit in sys.stdin:
         commit = commit.strip()
