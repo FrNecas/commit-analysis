@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import os
 import re
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -78,13 +79,19 @@ def analyze_commit(args, writer, commit):
     snapshot_path = os.path.join(os.getcwd(), "snapshot", commit)
     os.makedirs(snapshot_path, exist_ok=True)
 
-    result_path = os.path.join(os.getcwd(), "result", commit)
-    os.makedirs(result_path, exist_ok=True)
+    all_results_path = os.path.join(os.getcwd(), "result")
+    os.makedirs(all_results_path, exist_ok=True)
+    result_path = os.path.join(all_results_path, commit)
+    if os.path.exists(result_path):
+        shutil.rmtree(result_path)
 
     old_snapshot = os.path.join(snapshot_path, "old")
     new_snapshot = os.path.join(snapshot_path, "new")
 
     all_matched, functions = locate_functions(old_commit, new_commit)
+    if not functions:
+        writer.writerow([commit, "-", "-", "-", "NO-FUNCTIONS", "-"])
+        return
 
     with contextlib.chdir(args.repo):
         create_snapshot(repo, old_commit, args.diffkemp, functions, old_snapshot)
@@ -99,7 +106,8 @@ def analyze_commit(args, writer, commit):
         "-o",
         result_path
     ]
-    output = subprocess.run(compare_command, capture_output=True).stdout.decode()
+    res = subprocess.run(compare_command, capture_output=True)
+    output = res.stdout.decode()
     if match := re.search(r"^Equal:\s*(?P<number>\d+)", output, re.M):
         eq = int(match.group("number"))
         verdict = "equal" if eq == len(functions) else "not equal"
@@ -120,7 +128,10 @@ def run_analysis(args):
     writer.writerow(["commit", "functions", "no_functions", "no_eq_functions", "verdict", "confident"])
     for commit in sys.stdin:
         commit = commit.strip()
-        analyze_commit(args, writer, commit)
+        try:
+            analyze_commit(args, writer, commit)
+        except subprocess.CalledProcessError:
+            writer.writerow([commit, "-", "-", "-", "FAIL", "-"])
 
 
 def main():
