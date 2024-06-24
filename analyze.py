@@ -33,6 +33,8 @@ def locate_functions(old_commit, new_commit):
         # hunk is of the format:
         #   @@ <information about location> @@ <function> name
         for match in re.finditer(r"^@@.*@@ (?P<function>.*)$", diff_str, re.M):
+            if not match.group("function").endswith((",", ")", "{")):
+                continue
             if f_match := re.search(r"(^|\s)(?P<name>\S*)\(", match.group("function")):
                 matched = True
                 functions.add(f_match.group("name"))
@@ -40,7 +42,6 @@ def locate_functions(old_commit, new_commit):
             # Skip commits where we can't identify the changed function in
             # all the diff hunks
             all_matched = False
-
     return all_matched, list(functions)
 
 
