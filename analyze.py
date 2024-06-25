@@ -35,9 +35,25 @@ def locate_functions(old_commit, new_commit):
         for match in re.finditer(r"^@@.*@@ (?P<function>.*)$", diff_str, re.M):
             if not match.group("function").endswith((",", ")", "{")):
                 continue
-            if f_match := re.search(r"(^|\s)(?P<name>\S*)\(", match.group("function")):
+            if f_match := re.search(r"(^|\s)\*?(?P<name>\S*)\(", match.group("function")):
                 matched = True
                 functions.add(f_match.group("name"))
+        # Sometimes the above is imprecise, e.g., if there is a change at the
+        # start of a function, the previous function is reported inside the
+        # @@ @@ metadata. Try to look for function definitions in the hunk.
+        # The regex is obviously not prefect but should get the job done.
+        for match in re.finditer(
+                r"""^\s*[+-]?\s*  # diff part
+                           (\w+\s+){1,5} # return type and extra keywords
+                           \*?(?P<function>\w+)\(  # function name
+                           ((\w+\s+)+\*?\w+,\s*)*  # arguments separated by commas
+                           ((\w+\s+)+\*?\w+)?  # last possible argument
+                           \)?$  # line end
+                           """,
+                diff_str,
+                re.VERBOSE | re.MULTILINE):
+            matched = True
+            functions.add(match.group("function"))
         if not matched:
             # Skip commits where we can't identify the changed function in
             # all the diff hunks
@@ -91,7 +107,7 @@ def analyze_commit(args, writer, commit):
 
     all_matched, functions = locate_functions(old_commit, new_commit)
     if not functions:
-        writer.writerow([commit, "-", "-", "-", "NO-FUNCTIONS", "-"])
+        writer.writerow([commit, "-", "-", "-", "-", "NO-FUNCTIONS", "-"])
         return
 
     with contextlib.chdir(args.repo):
@@ -109,14 +125,18 @@ def analyze_commit(args, writer, commit):
     ]
     res = subprocess.run(compare_command, capture_output=True)
     output = res.stdout.decode()
-    if match := re.search(r"^Equal:\s*(?P<number>\d+)", output, re.M):
-        eq = int(match.group("number"))
-        verdict = "equal" if eq == len(functions) else "not equal"
+    eq_match = re.search(r"^Equal:\s*(?P<number>\d+)", output, re.M)
+    neq_match = re.search(r"^Not equal:\s*(?P<number>\d+)", output, re.M)
+    if eq_match and neq_match:
+        eq = int(eq_match.group("number"))
+        neq = int(neq_match.group("number"))
+        verdict = "equal" if neq == 0 else "not equal"
         writer.writerow([
             commit,
             ", ".join(functions),
             len(functions),
             eq,
+            neq,
             verdict,
             all_matched
         ])
@@ -126,13 +146,13 @@ def analyze_commit(args, writer, commit):
 
 def run_analysis(args):
     writer = csv.writer(sys.stdout, dialect="unix")
-    writer.writerow(["commit", "functions", "no_functions", "no_eq_functions", "verdict", "confident"])
+    writer.writerow(["commit", "functions", "no_functions", "eq", "neq", "verdict", "confident"])
     for commit in sys.stdin:
         commit = commit.strip()
         try:
             analyze_commit(args, writer, commit)
         except subprocess.CalledProcessError:
-            writer.writerow([commit, "-", "-", "-", "FAIL", "-"])
+            writer.writerow([commit, "-", "-", "-", "-", "FAIL", "-"])
 
 
 def main():
