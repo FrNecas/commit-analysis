@@ -107,7 +107,7 @@ def analyze_commit(args, writer, commit):
 
     all_matched, functions = locate_functions(old_commit, new_commit)
     if not functions:
-        writer.writerow([commit, "-", "-", "-", "-", "NO-FUNCTIONS", "-"])
+        writer.writerow([commit, "-", "-", "-", "-", "-", "-", "-", "NO-FUNCTIONS", "-"])
         return
 
     with contextlib.chdir(args.repo):
@@ -125,18 +125,28 @@ def analyze_commit(args, writer, commit):
     ]
     res = subprocess.run(compare_command, capture_output=True)
     output = res.stdout.decode()
-    eq_match = re.search(r"^Equal:\s*(?P<number>\d+)", output, re.M)
-    neq_match = re.search(r"^Not equal:\s*(?P<number>\d+)", output, re.M)
-    if eq_match and neq_match:
-        eq = int(eq_match.group("number"))
-        neq = int(neq_match.group("number"))
-        verdict = "equal" if neq == 0 else "not equal"
+    match = re.search(r"""Equal:\s*(?P<eq>\d+)\s+\(\d+%\)\s*
+                                 Not\s+equal:\s*(?P<neq>\d+)\s+\(\d+%\)\s*
+                                 \(empty\s+diff\):\s*(?P<empty>\d+)\s+\(\d+%\)\s*
+                                 Unknown:\s*(?P<unk>\d+)\s+\(\d+%\)\s*
+                                 Errors:\s*(?P<err>\d+)\s+\(\d+%\)""", output, re.VERBOSE)
+    if match:
+        eq = int(match.group("eq"))
+        neq = int(match.group("neq"))
+        empty = int(match.group("empty"))
+        unk = int(match.group("unk"))
+        err = int(match.group("err"))
+
+        verdict = "equal" if neq + err == 0 else "not equal"
         writer.writerow([
             commit,
             ", ".join(functions),
             len(functions),
             eq,
             neq,
+            empty,
+            unk,
+            err,
             verdict,
             all_matched
         ])
@@ -146,13 +156,14 @@ def analyze_commit(args, writer, commit):
 
 def run_analysis(args):
     writer = csv.writer(sys.stdout, dialect="unix")
-    writer.writerow(["commit", "functions", "no_functions", "eq", "neq", "verdict", "confident"])
+    writer.writerow(["commit", "functions", "no_functions", "eq", "neq",
+                     "empty", "unk", "err", "verdict", "confident"])
     for commit in sys.stdin:
         commit = commit.strip()
         try:
             analyze_commit(args, writer, commit)
         except subprocess.CalledProcessError:
-            writer.writerow([commit, "-", "-", "-", "-", "FAIL", "-"])
+            writer.writerow([commit, "-", "-", "-", "-", "-", "-", "-" "FAIL", "-"])
 
 
 def main():
